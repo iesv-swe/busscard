@@ -41,7 +41,7 @@
   button.primary:hover { background: #357abd; }
   .year-tables { display: flex; flex-direction: column; gap: 1rem; }
   .year-card { background: #fff; border-radius: 12px; border: 1px solid #e5e5e5; overflow: hidden; }
-  .year-header { padding: 12px 16px; border-bottom: 1px solid #e5e5e5; display: flex; align-items: center; gap: 8px; }
+  .year-header { padding: 12px 16px; border-bottom: 1px solid #e5e5e5; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .year-title { font-size: 14px; font-weight: 600; }
   .year-meta { font-size: 12px; color: #888; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -56,6 +56,7 @@
   .mono { font-family: 'Courier New', monospace; font-size: 12px; }
   .muted { color: #888; }
   .download-row { margin-top: 1.5rem; }
+  .error-box { background: #fce8e6; border: 1px solid #ea4335; border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; font-size: 13px; color: #c5221f; display: none; }
   @media (max-width: 600px) {
     .upload-grid { grid-template-columns: 1fr; }
     .summary-grid { grid-template-columns: repeat(2, 1fr); }
@@ -71,18 +72,20 @@
     <div class="drop-zone" id="drop-students" onclick="document.getElementById('file-students').click()">
       <div class="drop-icon">👥</div>
       <div class="drop-label">Student list</div>
-      <div class="drop-hint">Click or drop .xlsx</div>
+      <div class="drop-hint">Click or drop .xlsx — needs Lname, Fname, Class columns</div>
       <input type="file" id="file-students" accept=".xlsx" style="display:none;">
       <div class="drop-filename" id="students-name"></div>
     </div>
     <div class="drop-zone" id="drop-passes" onclick="document.getElementById('file-passes').click()">
       <div class="drop-icon">🎫</div>
       <div class="drop-label">Bus pass codes</div>
-      <div class="drop-hint">Click or drop .xlsx</div>
+      <div class="drop-hint">Click or drop .xlsx — columns headed ÅR 4, ÅR 5 etc.</div>
       <input type="file" id="file-passes" accept=".xlsx" style="display:none;">
       <div class="drop-filename" id="passes-name"></div>
     </div>
   </div>
+
+  <div class="error-box" id="error-box"></div>
 
   <div id="report">
     <div class="summary-grid" id="summary-grid"></div>
@@ -100,7 +103,7 @@
         </div>
       </div>
       <div id="no-spare-section" style="display:none; margin-bottom:1rem;">
-        <p style="font-size:13px;color:#666;">No spare passes available from other year groups.</p>
+        <p style="font-size:13px;color:#666;">No spare passes available from other year groups to cover the shortfall.</p>
       </div>
     </div>
 
@@ -116,6 +119,15 @@
 let studentsData = null;
 let passesData = null;
 let state = null;
+
+function showError(msg) {
+  const el = document.getElementById('error-box');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function clearError() {
+  document.getElementById('error-box').style.display = 'none';
+}
 
 function setupDrop(dropId, inputId, nameId, callback) {
   const drop = document.getElementById(dropId);
@@ -141,21 +153,55 @@ function handleFile(file, dropId, nameId, callback) {
   reader.readAsArrayBuffer(file);
 }
 
+// Supports two formats:
+// Format A (new): row 0 = headers [Lname, Fname, Class, ...]
+// Format B (old): no headers, year group detected by regex in any column
 function parseStudents(rows) {
+  if (rows.length === 0) return null;
+
+  const header = rows[0].map(c => String(c).trim().toLowerCase());
+  const lnameIdx = header.findIndex(h => h === 'lname' || h === 'last name' || h === 'surname');
+  const fnameIdx = header.findIndex(h => h === 'fname' || h === 'first name' || h === 'firstname');
+  const classIdx = header.findIndex(h => h === 'class' || h === 'year group' || h === 'class group');
+
   const students = [];
-  for (const row of rows) {
-    const nonEmpty = row.filter(c => c !== '');
-    if (nonEmpty.length < 3) continue;
-    const yearCol = row.findIndex(c => typeof c === 'string' && /^\d+[A-Z]/.test(String(c).trim()));
-    if (yearCol === -1) continue;
-    const yearGroup = String(row[yearCol]).trim();
-    const yearNum = yearGroup.match(/^(\d+)/)?.[1];
-    if (!yearNum) continue;
-    const surname = String(row[2] || '').trim();
-    const firstname = String(row[3] || '').trim();
-    const id = String(row[1] || '').trim();
-    students.push({ id, surname, firstname, yearGroup, yearNum });
+
+  if (lnameIdx !== -1 && fnameIdx !== -1 && classIdx !== -1) {
+    // Format A: header row present
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const yearGroup = String(row[classIdx] || '').trim();
+      const yearNum = yearGroup.match(/^(\d+)/)?.[1];
+      if (!yearNum || !yearGroup) continue;
+      students.push({
+        id: '',
+        surname: String(row[lnameIdx] || '').trim(),
+        firstname: String(row[fnameIdx] || '').trim(),
+        yearGroup,
+        yearNum
+      });
+    }
+  } else {
+    // Format B: old format — sniff year group from any column
+    for (const row of rows) {
+      const nonEmpty = row.filter(c => c !== '');
+      if (nonEmpty.length < 3) continue;
+      const yearCol = row.findIndex(c => typeof c === 'string' && /^\d+[A-Z]/.test(String(c).trim()));
+      if (yearCol === -1) continue;
+      const yearGroup = String(row[yearCol]).trim();
+      const yearNum = yearGroup.match(/^(\d+)/)?.[1];
+      if (!yearNum) continue;
+      students.push({
+        id: String(row[1] || '').trim(),
+        surname: String(row[2] || '').trim(),
+        firstname: String(row[3] || '').trim(),
+        yearGroup,
+        yearNum
+      });
+    }
   }
+
+  if (students.length === 0) return null;
   return students.sort((a, b) => a.surname.localeCompare(b.surname));
 }
 
@@ -179,6 +225,7 @@ function parsePasses(rows) {
 
 function buildState(useSpares) {
   const students = parseStudents(studentsData);
+  if (!students) return null;
   const passes = JSON.parse(JSON.stringify(parsePasses(passesData)));
   const years = [...new Set(students.map(s => s.yearNum))].sort((a, b) => +a - +b);
   const result = {};
@@ -218,9 +265,14 @@ function buildState(useSpares) {
 }
 
 function renderReport(useSpares) {
+  clearError();
   state = buildState(useSpares);
-  const years = Object.keys(state).sort((a, b) => +a - +b);
+  if (!state) {
+    showError('Could not parse the student file. Make sure it has Lname, Fname and Class columns in the header row.');
+    return;
+  }
 
+  const years = Object.keys(state).sort((a, b) => +a - +b);
   const totalStudents = years.reduce((s, yr) => s + state[yr].assigned.length + state[yr].unassigned.length, 0);
   const totalAssigned = years.reduce((s, yr) => s + state[yr].assigned.length, 0);
   const totalSpare = years.reduce((s, yr) => s + state[yr].spare.length, 0);
@@ -303,15 +355,15 @@ function skipSpares() {
 
 function downloadResult() {
   if (!state) return;
-  const rows = [['Surname', 'First name', 'Student ID', 'Class', 'Year', 'Bus pass code', 'Note']];
+  const rows = [['Surname', 'First name', 'Class', 'Year', 'Bus pass code', 'Note']];
   const years = Object.keys(state).sort((a, b) => +a - +b);
   for (const yr of years) {
     for (const s of state[yr].assigned)
-      rows.push([s.surname, s.firstname, s.id, s.yearGroup, yr, s.code, s.spareFrom ? `Spare from Year ${s.spareFrom}` : '']);
+      rows.push([s.surname, s.firstname, s.yearGroup, yr, s.code, s.spareFrom ? `Spare from Year ${s.spareFrom}` : '']);
     for (const s of state[yr].unassigned)
-      rows.push([s.surname, s.firstname, s.id, s.yearGroup, yr, '', 'No pass available']);
+      rows.push([s.surname, s.firstname, s.yearGroup, yr, '', 'No pass available']);
     for (const code of state[yr].spare)
-      rows.push(['', '', '', '', yr, code, `Spare (Year ${yr})`]);
+      rows.push(['', '', '', yr, code, `Spare (Year ${yr})`]);
   }
   const ws = XLSX.utils.aoa_to_sheet(rows);
   const wb = XLSX.utils.book_new();
